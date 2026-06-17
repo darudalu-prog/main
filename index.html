@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>6択テスト（100問プールから20問ランダム）</title>
+	<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+	<div class="container">
+		<header>
+			<div class="title">
+				6択テスト
+				<span class="badge">CSVから読込・20問ランダム</span>
+			</div>
+			<div class="toolbar panel">
+				<button id="btn-start" class="btn primary" disabled>テスト開始 / リスタート</button>
+				<label class="small" style="margin-left:12px; display:flex; align-items:center; gap:6px;">
+					<span>出題数</span>
+					<select id="num-select" class="btn" disabled></select>
+				</label>
+				<div class="grow"></div>
+				<button id="btn-submit" class="btn success" disabled>採点する</button>
+			</div>
+		</header>
+
+		<div class="content">
+			<section class="panel card" id="card">
+				<div class="q-header">
+					<div id="q-index" class="q-index">Q - / -</div>
+					<div id="progress" class="small" style="color: var(--text-dim)">未回答 -</div>
+				</div>
+				<div id="q-text" class="q-text">データ読み込み中...</div>
+				<div id="choices" class="choices"></div>
+				<div class="nav">
+					<button id="btn-prev" class="btn" disabled>前へ</button>
+					<button id="btn-next" class="btn" disabled>次へ</button>
+				</div>
+			</section>
+
+			<aside class="side">
+				<div class="panel">
+					<div class="grid" id="grid"></div>
+					<div class="stats">
+						<div class="row"><span>全体</span><strong><span id="pool-size">-</span>問プール</strong></div>
+						<div class="row"><span>今回のテスト</span><strong><span id="test-count">-</span>問</strong></div>
+						<div class="row"><span>回答済</span><strong id="stat-answered">0</strong></div>
+					</div>
+					<div id="score" class="score"></div>
+				</div>
+
+				<div id="result" class="panel result"></div>
+			</aside>
+		</div>
+	</div>
+
+	<script src="app.js"></script>
+</body>
+</html>

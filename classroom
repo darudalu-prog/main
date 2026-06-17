@@ -1,0 +1,280 @@
+/**
+ * スプレッドシート上の問題データからGoogleフォーム（テスト）を自動作成する。
+ *
+ * 使い方:
+ * 1) createQuizFormFromSheet() の CONFIG を環境に合わせて更新
+ * 2) Apps Script エディタで実行
+ * 3) ログに作成されたフォームURLが出力される
+ */
+function createQuizFormFromSheet() {
+  var CONFIG = {
+    // 空文字の場合は実行中のスプレッドシートを使用
+    spreadsheetId: "",
+    sourceSheetName: "R07_ALL",
+    formTitle: "ITパスポート 模擬テスト",
+    formDescription: "スプレッドシートから自動生成した4択テストです。",
+    numberOfQuestions: 20,
+    enableRangePrompt: true,
+    pointsPerQuestion: 5,
+    shuffleChoices: true,
+    skipRowsWithoutEnoughChoices: true
+  };
+
+  var quizRows = readQuizRowsFromSheet_(CONFIG);
+  if (quizRows.length === 0) {
+    throw new Error("有効な問題行が見つかりませんでした。シートの形式を確認してください。");
+  }
+  var range = CONFIG.enableRangePrompt ? promptQuestionRange_(quizRows) : null;
+  var rangedRows = filterRowsByRange_(quizRows, range);
+  if (rangedRows.length === 0) {
+    throw new Error("指定範囲に該当する問題がありませんでした。");
+  }
+  var selectedRows = selectRandomRows_(rangedRows, CONFIG.numberOfQuestions);
+  logRowsAsTable_("読み込んだ出題データ", selectedRows);
+
+  var form = FormApp.create(CONFIG.formTitle);
+  form.setDescription(CONFIG.formDescription);
+  form.setIsQuiz(true);
+
+  var nameItem = form.addTextItem();
+  nameItem.setTitle("年組番　氏名");
+  nameItem.setRequired(true);
+
+  selectedRows.forEach(function (row, idx) {
+    var optionObjects = buildChoiceObjects_(row, CONFIG.shuffleChoices);
+    if (CONFIG.skipRowsWithoutEnoughChoices && optionObjects.length < 2) {
+      return;
+    }
+
+    var item = form.addMultipleChoiceItem();
+    item.setTitle("問" + (idx + 1) + ". " + row.question);
+    item.setRequired(true);
+    item.setPoints(CONFIG.pointsPerQuestion);
+
+    var choiceObjects = optionObjects.map(function (opt) {
+      return item.createChoice(opt.text, opt.isCorrect);
+    });
+    item.setChoices(choiceObjects);
+    Logger.log("設問" + (idx + 1) + " 正解: " + getCorrectChoiceText_(optionObjects));
+  });
+
+  Logger.log("フォームを作成しました: " + form.getPublishedUrl());
+  Logger.log("編集URL: " + form.getEditUrl());
+  Logger.log("出題数: " + selectedRows.length);
+  if (range) {
+    Logger.log("出題範囲: " + range.min + " 〜 " + range.max);
+  }
+}
+
+function readQuizRowsFromSheet_(config) {
+  var ss = config.spreadsheetId
+    ? SpreadsheetApp.openById(config.spreadsheetId)
+    : SpreadsheetApp.getActiveSpreadsheet();
+
+  var sheet = ss.getSheetByName(config.sourceSheetName);
+  if (!sheet) {
+    throw new Error("問題シートが見つかりません: " + config.sourceSheetName);
+  }
+
+  var values = sheet.getDataRange().getValues();
+  return parseQuizRows_(values);
+}
+
+/**
+ * シート行を解析して問題配列を返す。
+ * 想定ヘッダ: 問題番号,問題,正解答,誤回答1,誤回答2,誤回答3
+ */
+function parseQuizRows_(lines) {
+  var rows = [];
+
+  lines.forEach(function (cols) {
+    if (!cols || cols.length === 0) return;
+    if (cols.length < 6) return;
+
+    var no = normalizeCell_(cols[0]);
+    var question = normalizeQuestionCell_(cols[1]);
+    var correct = normalizeCell_(cols[2]);
+    var wrong1 = normalizeCell_(cols[3]);
+    var wrong2 = normalizeCell_(cols[4]);
+    var wrong3 = normalizeCell_(cols[5]);
+
+    // ヘッダ行・空行をスキップ（中間にヘッダが再出現しても除外）
+    if (no === "問題番号" || question === "問題") return;
+    if (!question || !correct) return;
+
+    rows.push({
+      no: no,
+      question: question,
+      correct: correct,
+      wrong1: wrong1,
+      wrong2: wrong2,
+      wrong3: wrong3
+    });
+  });
+
+  return rows;
+}
+
+function selectRandomRows_(rows, count) {
+  var copied = rows.slice();
+  var shuffled = shuffle_(copied);
+  var n = Math.max(1, Math.min(Number(count) || 20, shuffled.length));
+  return shuffled.slice(0, n);
+}
+
+function promptQuestionRange_(rows) {
+  var ui = SpreadsheetApp.getUi();
+  var bounds = getQuestionNumberBounds_(rows);
+  var defaultMin = bounds.min;
+  var defaultMax = bounds.max;
+
+  var minRes = ui.prompt(
+    "出題範囲の開始番号",
+    "問題番号の最小値を入力してください（例: 1）。\n既定値: " + defaultMin,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (minRes.getSelectedButton() !== ui.Button.OK) {
+    throw new Error("処理をキャンセルしました。");
+  }
+
+  var maxRes = ui.prompt(
+    "出題範囲の終了番号",
+    "問題番号の最大値を入力してください（例: 50）。\n既定値: " + defaultMax,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (maxRes.getSelectedButton() !== ui.Button.OK) {
+    throw new Error("処理をキャンセルしました。");
+  }
+
+  var min = toValidNumber_(minRes.getResponseText(), defaultMin);
+  var max = toValidNumber_(maxRes.getResponseText(), defaultMax);
+  if (min > max) {
+    throw new Error("開始番号は終了番号以下にしてください。");
+  }
+
+  return { min: min, max: max };
+}
+
+function filterRowsByRange_(rows, range) {
+  if (!range) return rows;
+  return rows.filter(function (row) {
+    var no = extractQuestionNumber_(row.no);
+    return no >= range.min && no <= range.max;
+  });
+}
+
+function getQuestionNumberBounds_(rows) {
+  var numbers = rows
+    .map(function (row) { return extractQuestionNumber_(row.no); })
+    .filter(function (n) { return n > 0; });
+  if (numbers.length === 0) {
+    return { min: 1, max: rows.length };
+  }
+  return {
+    min: Math.min.apply(null, numbers),
+    max: Math.max.apply(null, numbers)
+  };
+}
+
+function extractQuestionNumber_(value) {
+  var text = normalizeCell_(value);
+  var m = text.match(/\d+/);
+  return m ? Number(m[0]) : 0;
+}
+
+function toValidNumber_(text, fallback) {
+  var s = normalizeCell_(text);
+  if (!s) return fallback;
+  var n = Number(s);
+  if (!isFinite(n)) return fallback;
+  return Math.floor(n);
+}
+
+function logRowsAsTable_(title, rows) {
+  var header = ["No", "問題番号", "問題", "正解", "ダミー1", "ダミー2", "ダミー3"];
+  var table = [header.join("\t")];
+  rows.forEach(function (r, idx) {
+    table.push([
+      idx + 1,
+      normalizeCell_(r.no),
+      normalizeCell_(r.question),
+      normalizeCell_(r.correct),
+      normalizeCell_(r.wrong1),
+      normalizeCell_(r.wrong2),
+      normalizeCell_(r.wrong3)
+    ].join("\t"));
+  });
+  Logger.log(title + "\n" + table.join("\n"));
+}
+
+function buildChoiceObjects_(row, shouldShuffle) {
+  // C列を正解として保持したまま選択肢オブジェクト化
+  var raw = [
+    { text: normalizeCell_(row.correct), isCorrect: true },
+    { text: normalizeCell_(row.wrong1), isCorrect: false },
+    { text: normalizeCell_(row.wrong2), isCorrect: false },
+    { text: normalizeCell_(row.wrong3), isCorrect: false }
+  ].filter(function (v) {
+    return v.text !== "";
+  });
+
+  // 同一文言が重複していた場合、正解フラグを優先して1つにまとめる
+  var byText = {};
+  raw.forEach(function (v) {
+    if (!byText[v.text]) byText[v.text] = { text: v.text, isCorrect: false };
+    byText[v.text].isCorrect = byText[v.text].isCorrect || v.isCorrect;
+  });
+  var choices = Object.keys(byText).map(function (k) { return byText[k]; });
+
+  // 正解が必ず1つになるよう補正
+  var correctCount = choices.filter(function (c) { return c.isCorrect; }).length;
+  if (correctCount === 0 && choices.length > 0) {
+    choices[0].isCorrect = true;
+  } else if (correctCount > 1) {
+    var picked = false;
+    choices = choices.map(function (c) {
+      if (c.isCorrect && !picked) {
+        picked = true;
+        return c;
+      }
+      return { text: c.text, isCorrect: false };
+    });
+  }
+
+  if (shouldShuffle) choices = shuffle_(choices);
+  return choices;
+}
+
+function getCorrectChoiceText_(choices) {
+  var found = choices.find(function (c) { return c.isCorrect; });
+  return found ? found.text : "(未設定)";
+}
+
+function normalizeCell_(value) {
+  var text = String(value || "").trim();
+  // 例: [cite: 12], [cite: 10, 187] のような注記を除去
+  text = text.replace(/\[cite:\s*[^\]]*\]/gi, "");
+  // 余分な空白を整形
+  text = text.replace(/\s+/g, " ").trim();
+  return text;
+}
+
+function normalizeQuestionCell_(value) {
+  var text = String(value || "");
+  // 例: [cite: 12], [cite: 10, 187] のような注記を除去
+  text = text.replace(/\[cite:\s*[^\]]*\]/gi, "");
+  // 改行は保持し、改行前後の半角空白も含めて文字列をそのまま維持
+  text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return text;
+}
+
+function shuffle_(arr) {
+  var a = arr.slice();
+  for (var i = a.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var tmp = a[i];
+    a[i] = a[j];
+    a[j] = tmp;
+  }
+  return a;
+}
